@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Simple Voice Chat</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    button { padding: 10px 15px; font-size: 16px; }
+    #users { margin-top: 20px; }
+    .user { padding: 10px; border: 1px solid #ccc; border-radius: 8px; margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+  <h2>Simple WebRTC Voice Chat</h2>
+  <button id="joinBtn">Join Voice</button>
+
+  <div id="users"></div>
+
+  <script>
+    const ws = new WebSocket("wss://your-signaling-server.example.com"); // 바꿔야 함
+    const peers = {}; 
+    let localStream;
+    const userId = Math.random().toString(36).slice(2);
+
+    ws.onopen = () => ws.send(JSON.stringify({ type: "join", userId }));
+
+    ws.onmessage = async (msg) => {
+      const data = JSON.parse(msg.data);
+      const { from, to, sdp, ice, type } = data;
+
+      if (type === "offer" && to === userId) {
+        await createPeer(from, false);
+        await peers[from].pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        const answer = await peers[from].pc.createAnswer();
+        await peers[from].pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({ type: "answer", to: from, from: userId, sdp: answer }));
+      }
+
+      if (type === "answer" && to === userId) {
+        await peers[from].pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      }
+
+      if (ice && to === userId) {
+        peers[from].pc.addIceCandidate(new RTCIceCandidate(ice));
+      }
+    };
+
+    async function createPeer(targetId, isInitiator) {
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+
+      localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+      pc.ontrack = (e) => addUserAudio(targetId, e.streams[0]);
+      pc.onicecandidate = (e) => {
+        if (e.candidate) ws.send(JSON.stringify({ type: "ice", ice: e.candidate, to: targetId, from: userId }));
+      };
+
+      peers[targetId] = { pc };
+
+      if (isInitiator) {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        ws.send(JSON.stringify({ type: "offer", to: targetId, from: userId, sdp: offer }));
+      }
+    }
+
+    function addUserAudio(id, stream) {
+      let div = document.getElementById(id);
+      if (!div) {
+        div = document.createElement("div");
+        div.className = "user";
+        div.id = id;
+        div.innerHTML = `<strong>User: ${id}</strong><br>`;
+        const audio = document.createElement("audio");
+        audio.autoplay = true;
+        div.appendChild(audio);
+        document.getElementById("users").appendChild(div);
+        div.audio = audio;
+      }
+      div.audio.srcObject = stream;
+    }
+
+    document.getElementById("joinBtn").onclick = async () => {
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      ws.send(JSON.stringify({ type: "ready", userId }));
+    };
+  </script>
+</body>
+</html>
